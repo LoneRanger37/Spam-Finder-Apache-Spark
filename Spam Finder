@@ -1,0 +1,59 @@
+
+import org.apache.spark.sql.Row
+
+val tf = spark.read.options(Map("header"-> "true", "quote"-> "\"", "multiline"-> "true", "escape"-> "\"")).csv("spam_ham_dataset.csv")
+
+ val t1 = tf.select("label_num", "text").rdd
+ 
+  val t2 = t1.map(x => Row.fromTuple(x(0),x(1).toString.replaceAll("Subject|:|;|\\.|#|'|,|\\{|\\}|/|-|(|)","")))
+  
+  // random split dataset to training and testing with ratio 70/30
+   val Array(trainData, testData) = t2.randomSplit(Array(0.7, 0.3))
+   
+   //compute p(s), p(h)
+   val t3 = trainData.groupBy(_(0))
+   
+   val psh = t3.map(a => (a._1, a._2.size)).take(2)
+  
+  //spam 
+  val ps = 1.0*psh(1)._2/trainData.count
+  //not spam
+  val ph = 1.0*psh(0)._2/trainData.count
+  
+  // analyze ham words in training email dataset
+   val hamWords = t3.take(2)(0)._2.map(_(1).toString).reduce(_+_)
+   
+    //hamWords.split(" ").toSet.size
+	
+	// frequency of each word in ham email
+	 val hamWordFreq = hamWords.split("\\s+").map((_, 1)).groupBy(_._1).map(x => (x._1, x._2.size))
+  // compute p(wi|h) =# of wi / total 3 words 
+   val t_words_ham = hamWords.split("\\s+").size
+  val p_wi_h = hamWordFreq.map(x => (x._1, 1.0*x._2/t_words_ham))
+  
+  // analyze spam words in training email dataset
+   val spamWords = t3.take(2)(1)._2.map(_(1).toString).reduce(_+_)
+    //hamWords.split(" ").toSet.size
+	// frequency of each word in ham email
+	 val spamWordFreq = spamWords.split("\\s+").map((_, 1)).groupBy(_._1).map(x => (x._1, x._2.size))
+  // compute p(wi|h) =# of wi / total 3 words 
+   val t_words_spam = spamWords.split("\\s+").size
+  val p_wi_s = spamWordFreq.map(x => (x._1, 1.0*x._2/t_words_spam))
+  
+  //compute p(w|s) where w not in spam and p(w|h) where w not in ham with aplha = 1
+  val N = p_wi_h.size + p_wi_s.size
+   val p_w_not_in_spam = 1.0/ (t_words_spam + N)
+    val p_w_not_in_ham = 1.0/ (t_words_ham + N)
+	
+	// Define a function to compute a give word and return (label, predict label)
+	// the function accept a Row argument
+	def predict(row: Row) = {
+	 val p_h_M = row(1).toString.split("\\s+").map( x => {if (p_wi_h.isDefinedAt(x)) Math.log(p_wi_h(x)) else Math.log(p_w_not_in_ham)}).sum+ Math.log(ph)
+	
+	 val p_s_M = row(1).toString.split("\\s+").map( x => {if (p_wi_s.isDefinedAt(x)) Math.log(p_wi_s(x)) else Math.log(p_w_not_in_spam)}).sum+ Math.log(ps)
+	 	 if(p_h_M > p_s_M) (row(0).toString.toInt , 0) else (row(0.toString.toInt), 1)
+	 }
+	 
+	 //compute accuracy
+	 val result = testData.map(predict).map(x => {if (x._1 == x._2) 1 else 0})
+	  val accuracy = result.sum/result.count
